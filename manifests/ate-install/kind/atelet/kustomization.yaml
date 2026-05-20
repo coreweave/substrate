@@ -38,6 +38,8 @@ patches:
                 value: http://opentelemetry-collector.otel-system.svc:4317
               - name: ATE_STORAGE_BACKEND
                 value: s3
+              - name: ATE_S3_AUTO_CREATE_BUCKET
+                value: "true"
               - name: AWS_REGION
                 value: us-east-1
               - name: AWS_ENDPOINT_URL
