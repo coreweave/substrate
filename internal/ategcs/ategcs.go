@@ -56,11 +56,28 @@ func (g *gcsClient) PutObject(ctx context.Context, bucket, object string, reader
 }
 
 type s3Client struct {
-	client *s3.Client
+	client          *s3.Client
+	autoCreateBucket bool
 }
 
-func NewS3Client(client *s3.Client) ObjectStorage {
-	return &s3Client{client: client}
+// S3ClientOption configures the S3 ObjectStorage implementation.
+type S3ClientOption func(*s3Client)
+
+// WithAutoCreateBucket controls whether PutObject attempts to create the target
+// bucket before each upload. This is convenient against local minio for dev,
+// but should be left off (the default) against managed S3-compatible backends
+// where the caller typically lacks bucket-create permission and the per-Put
+// CreateBucket call returns 403, adds latency, and pollutes audit logs.
+func WithAutoCreateBucket(enabled bool) S3ClientOption {
+	return func(c *s3Client) { c.autoCreateBucket = enabled }
+}
+
+func NewS3Client(client *s3.Client, opts ...S3ClientOption) ObjectStorage {
+	c := &s3Client{client: client}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 func (s *s3Client) GetObject(ctx context.Context, bucket, object string) (io.ReadCloser, error) {
@@ -75,10 +92,13 @@ func (s *s3Client) GetObject(ctx context.Context, bucket, object string) (io.Rea
 }
 
 func (s *s3Client) PutObject(ctx context.Context, bucket, object string, reader io.Reader) error {
-	// Try creating the bucket first (ignore if it already exists)
-	_, _ = s.client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(bucket),
-	})
+	if s.autoCreateBucket {
+		// Best-effort: convenient for local minio dev. Ignored for managed
+		// backends where the caller has no CreateBucket permission.
+		_, _ = s.client.CreateBucket(ctx, &s3.CreateBucketInput{
+			Bucket: aws.String(bucket),
+		})
+	}
 
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
