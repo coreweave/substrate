@@ -164,9 +164,6 @@ func main() {
 
 	var wrappedGCS ategcs.ObjectStorage
 	if s3Client != nil {
-		// Opt-in: against local minio it's convenient to create buckets on
-		// first Put. Against managed S3-compatible backends the caller
-		// typically lacks bucket-create permission, so we default to off.
 		autoCreateBucket := os.Getenv("ATE_S3_AUTO_CREATE_BUCKET") == "true"
 		wrappedGCS = ategcs.NewS3Client(s3Client, ategcs.WithAutoCreateBucket(autoCreateBucket))
 	} else if gcsClient != nil {
