@@ -97,6 +97,8 @@ func do(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("while scraping info from eth0: %w", err)
 	}
+
+	eth0LinkInfo.Neighbors = scrapeGatewayNeighbors(ctx, eth0Link, eth0LinkInfo.Routes)
 	slog.InfoContext(ctx, "Eth0 link info", slog.Any("eth0", eth0LinkInfo))
 
 	// Create a new network namespace that we will pass to gVisor.  gVisor will
@@ -472,6 +474,7 @@ func netNSDo(ctx context.Context, targetNS netns.NsHandle, do func(context.Conte
 type SaveLinkInfo struct {
 	Addresses []SaveAddr
 	Routes    []SaveRoute
+	Neighbors []SaveNeigh
 }
 
 type SaveAddr struct {
@@ -487,6 +490,11 @@ type SaveRoute struct {
 	Gateway  net.IP
 	Protocol int
 	Type     int
+}
+
+type SaveNeigh struct {
+	IP           net.IP
+	HardwareAddr net.HardwareAddr
 }
 
 func scrapeLink(link netlink.Link) (*SaveLinkInfo, error) {
@@ -529,6 +537,72 @@ func scrapeLink(link netlink.Link) (*SaveLinkInfo, error) {
 	}, nil
 }
 
+// scrapeGatewayNeighbors triggers neighbor resolution for every gateway in
+// routes and returns the (IP, MAC) pairs the kernel installed. The kernel
+// only starts ARP when something tries to send, so we emit a no-op UDP
+// packet and then poll the neighbor table until each entry transitions out
+// of NUD_INCOMPLETE.
+func scrapeGatewayNeighbors(ctx context.Context, link netlink.Link, routes []SaveRoute) []SaveNeigh {
+	gateways := make(map[string]net.IP)
+	for _, r := range routes {
+		if len(r.Gateway) == 0 {
+			continue
+		}
+		if r.Gateway.To4() == nil && r.Gateway.IsLinkLocalUnicast() {
+			continue
+		}
+		gateways[r.Gateway.String()] = r.Gateway
+	}
+	if len(gateways) == 0 {
+		return nil
+	}
+
+	for _, gw := range gateways {
+		probeNeighbor(ctx, gw)
+	}
+
+	var out []SaveNeigh
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(gateways) > 0 {
+		neighList, err := netlink.NeighList(link.Attrs().Index, netlink.FAMILY_ALL)
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to list neighbors on eth0", slog.Any("err", err))
+			return out
+		}
+		for _, n := range neighList {
+			key := n.IP.String()
+			if _, want := gateways[key]; !want {
+				continue
+			}
+			if len(n.HardwareAddr) == 0 {
+				continue
+			}
+			out = append(out, SaveNeigh{IP: n.IP, HardwareAddr: n.HardwareAddr})
+			slog.InfoContext(ctx, "Captured gateway neighbor", slog.String("ip", key), slog.String("mac", n.HardwareAddr.String()))
+			delete(gateways, key)
+		}
+		if len(gateways) > 0 {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	for ip := range gateways {
+		slog.WarnContext(ctx, "Gateway neighbor not resolved at startup", slog.String("ip", ip))
+	}
+	return out
+}
+
+func probeNeighbor(ctx context.Context, ip net.IP) {
+	addr := &net.UDPAddr{IP: ip, Port: 9}
+	c, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to probe gateway", slog.String("ip", ip.String()), slog.Any("err", err))
+		return
+	}
+	// Write triggers actual transmission, which forces ARP resolution.
+	_, _ = c.Write([]byte{0})
+	_ = c.Close()
+}
+
 func restoreLink(ctx context.Context, link netlink.Link, info *SaveLinkInfo) error {
 	for i, saveAddr := range info.Addresses {
 		addr := &netlink.Addr{
@@ -559,6 +633,23 @@ func restoreLink(ctx context.Context, link netlink.Link, info *SaveLinkInfo) err
 		slog.InfoContext(ctx, "Restoring route", slog.String("dst", saveRoute.Dst.String()), slog.String("src", saveRoute.Src.String()), slog.String("gateway", saveRoute.Gateway.String()))
 		if err := netlink.RouteReplace(route); err != nil {
 			return fmt.Errorf("while restoring route %d: %w", i, err)
+		}
+	}
+	for i, n := range info.Neighbors {
+		family := netlink.FAMILY_V4
+		if n.IP.To4() == nil {
+			family = netlink.FAMILY_V6
+		}
+		neigh := &netlink.Neigh{
+			LinkIndex:    link.Attrs().Index,
+			Family:       family,
+			State:        netlink.NUD_PERMANENT,
+			IP:           n.IP,
+			HardwareAddr: n.HardwareAddr,
+		}
+		slog.InfoContext(ctx, "Restoring permanent neighbor", slog.String("ip", n.IP.String()), slog.String("mac", n.HardwareAddr.String()))
+		if err := netlink.NeighSet(neigh); err != nil {
+			return fmt.Errorf("while restoring neighbor %d (%s): %w", i, n.IP, err)
 		}
 	}
 	return nil
