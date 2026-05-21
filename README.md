@@ -55,12 +55,20 @@ Agent Substrate is designed to be **framework and agent harness agnostic**. Beca
 *   **Claude Code & CodeX:** Support for high-density, stateful coding environments that preserve terminal and filesystem state across sessions.
 *   **Model Context Protocol (MCP):** Deploy secure, sandboxed MCP servers as Substrate Actors to provide durable tools for any LLM.
 
+## Ecosystem & Examples
+
+*   **[Agent Executor](https://github.com/google/ax):** A distributed agent runtime that demonstrates building a secure, hyper-scalable agent harness on Agent Substrate (see the [announcement blog](https://cloud.google.com/blog/products/ai-machine-learning/agent-executor-googles-distributed-agent-runtime) and [integration guide](https://github.com/google/ax/blob/main/manifests/README.md)).
+
 ## Status and compatibility
 
 Agent Substrate is currently in VERY early development.  It is not ready for
 production use, and the APIs are almost guaranteed to change.  We are not
 making any guarantees about backward compatibility at this stage, and
 everything in this project may be changed.
+
+### Supported Kubernetes Releases
+
+Currently we aim to support the [latest stable release](https://kubernetes.io/releases/) of Kubernetes, and the previous minor release.
 
 ## Community
 
